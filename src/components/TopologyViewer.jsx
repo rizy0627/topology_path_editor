@@ -13,6 +13,7 @@ import { getPointRotationRadians } from '../helpers/rotation';
 
 const NODE_RADIUS = 0.18;
 const TEMP_POINT_RADIUS = 0.14;
+const GOAL_POSE_RADIUS = 0.2;
 const LABEL_SCALE = 0.45;
 const PATH_ARROW_LIMIT = 90;
 const VIEW_FACE_PRESETS = {
@@ -181,6 +182,61 @@ function makePathOverlay(pathData, color = '#f43f5e') {
   markers.userData = { kind: 'pathOverlayMarkers' };
   group.add(markers);
 
+  return group;
+}
+
+function makeGoalPose(pose) {
+  const group = new THREE.Group();
+  const { position, orientation } = pose;
+  group.position.set(position.x, position.y, position.z);
+  group.userData = { kind: 'goalPoseGroup', id: pose.id };
+
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(GOAL_POSE_RADIUS, 20, 14),
+    new THREE.MeshStandardMaterial({
+      color: '#e879f9',
+      emissive: '#a21caf',
+      emissiveIntensity: 0.32,
+      roughness: 0.35,
+      metalness: 0.08,
+    }),
+  );
+  marker.userData = { kind: 'goalPose', id: pose.id };
+  group.add(marker);
+
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(GOAL_POSE_RADIUS * 1.45, 0.025, 8, 40),
+    new THREE.MeshBasicMaterial({ color: '#f0abfc', depthTest: false }),
+  );
+  ring.userData = { kind: 'goalPoseRing', id: pose.id };
+  group.add(ring);
+
+  const quaternion = new THREE.Quaternion(
+    orientation.x,
+    orientation.y,
+    orientation.z,
+    orientation.w,
+  );
+  const direction = new THREE.Vector3(1, 0, 0).applyQuaternion(quaternion).normalize();
+  const arrow = new THREE.ArrowHelper(
+    direction,
+    new THREE.Vector3(0, 0, GOAL_POSE_RADIUS * 1.1),
+    GOAL_POSE_RADIUS * 3.2,
+    new THREE.Color('#facc15').getHex(),
+    GOAL_POSE_RADIUS * 1.2,
+    GOAL_POSE_RADIUS * 0.7,
+  );
+  arrow.userData = { kind: 'goalPoseArrow', id: pose.id };
+  group.add(arrow);
+  group.add(createNodeLabel(`G${pose.id}`, '#c026d3'));
+
+  return group;
+}
+
+function makeGoalPosesOverlay(goalPoses = []) {
+  const group = new THREE.Group();
+  group.userData = { kind: 'goalPosesOverlay' };
+  goalPoses.forEach((pose) => group.add(makeGoalPose(pose)));
   return group;
 }
 
@@ -480,7 +536,42 @@ function updateTemporaryPointEdgePreview(drag, position, spacing) {
   applyPositionsToGeometry(drag.previewVisual.markers, positions.slice());
 }
 
-function getContentBounds(mapObject, topologyGroup, pathObject) {
+function getQuantile(sortedValues, quantile) {
+  if (!sortedValues.length) return 0;
+  const position = (sortedValues.length - 1) * quantile;
+  const lowerIndex = Math.floor(position);
+  const upperIndex = Math.ceil(position);
+  const ratio = position - lowerIndex;
+  return sortedValues[lowerIndex] * (1 - ratio) + sortedValues[upperIndex] * ratio;
+}
+
+function getGoalPosesCameraBounds(goalPosesObject) {
+  const points = (goalPosesObject?.children || []).map((child) => child.position.clone());
+  if (!points.length) return null;
+
+  let cameraPoints = points;
+  if (points.length >= 8) {
+    const axes = ['x', 'y', 'z'];
+    const fences = Object.fromEntries(axes.map((axis) => {
+      const values = points.map((point) => point[axis]).sort((first, second) => first - second);
+      const lowerQuartile = getQuantile(values, 0.25);
+      const upperQuartile = getQuantile(values, 0.75);
+      const interquartileRange = upperQuartile - lowerQuartile;
+      return [axis, interquartileRange > 0.0001
+        ? [lowerQuartile - interquartileRange * 3, upperQuartile + interquartileRange * 3]
+        : null];
+    }));
+    const filtered = points.filter((point) => axes.every((axis) => (
+      !fences[axis] || (point[axis] >= fences[axis][0] && point[axis] <= fences[axis][1])
+    )));
+
+    if (filtered.length >= Math.max(3, Math.ceil(points.length / 2))) cameraPoints = filtered;
+  }
+
+  return new THREE.Box3().setFromPoints(cameraPoints).expandByScalar(GOAL_POSE_RADIUS * 4);
+}
+
+function getContentBounds(mapObject, topologyGroup, pathObject, goalPosesObject) {
   const box = new THREE.Box3();
   let hasContent = false;
 
@@ -496,6 +587,11 @@ function getContentBounds(mapObject, topologyGroup, pathObject) {
     box.expandByObject(pathObject);
     hasContent = true;
   }
+  const goalPosesBounds = getGoalPosesCameraBounds(goalPosesObject);
+  if (goalPosesBounds) {
+    box.union(goalPosesBounds);
+    hasContent = true;
+  }
 
   if (!hasContent || box.isEmpty()) {
     box.setFromCenterAndSize(new THREE.Vector3(0, 0, 0), new THREE.Vector3(8, 8, 3));
@@ -504,8 +600,8 @@ function getContentBounds(mapObject, topologyGroup, pathObject) {
   return box;
 }
 
-function getContentCameraMetrics(mapObject, topologyGroup, pathObject) {
-  const box = getContentBounds(mapObject, topologyGroup, pathObject);
+function getContentCameraMetrics(mapObject, topologyGroup, pathObject, goalPosesObject) {
+  const box = getContentBounds(mapObject, topologyGroup, pathObject, goalPosesObject);
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z, 2);
@@ -524,8 +620,8 @@ function applyCameraPose({ camera, controls, center, distance, direction, up }) 
   controls.update();
 }
 
-function fitCameraToContent({ camera, controls, mapObject, topologyGroup, pathObject }) {
-  const { center, maxDim } = getContentCameraMetrics(mapObject, topologyGroup, pathObject);
+function fitCameraToContent({ camera, controls, mapObject, topologyGroup, pathObject, goalPosesObject }) {
+  const { center, maxDim } = getContentCameraMetrics(mapObject, topologyGroup, pathObject, goalPosesObject);
   const distance = maxDim * 1.25;
 
   applyCameraPose({
@@ -538,11 +634,11 @@ function fitCameraToContent({ camera, controls, mapObject, topologyGroup, pathOb
   });
 }
 
-function applyViewFace({ face, camera, controls, mapObject, topologyGroup, pathObject }) {
+function applyViewFace({ face, camera, controls, mapObject, topologyGroup, pathObject, goalPosesObject }) {
   const preset = VIEW_FACE_PRESETS[face];
   if (!preset) return;
 
-  const { center, maxDim } = getContentCameraMetrics(mapObject, topologyGroup, pathObject);
+  const { center, maxDim } = getContentCameraMetrics(mapObject, topologyGroup, pathObject, goalPosesObject);
   const distance = maxDim * 1.35;
 
   applyCameraPose({
@@ -566,6 +662,7 @@ export default function TopologyViewer({
   pickedPoint,
   pathData,
   pathColor,
+  goalPoses,
   selectedNodeId,
   selectedEdgeKey,
   selectedTempPointKey,
@@ -592,6 +689,7 @@ export default function TopologyViewer({
   const mapObjectRef = useRef(null);
   const pickedPointMarkerRef = useRef(null);
   const pathOverlayRef = useRef(null);
+  const goalPosesOverlayRef = useRef(null);
   const topologyGroupRef = useRef(new THREE.Group());
   const nodeMeshesRef = useRef([]);
   const tempPointMeshesRef = useRef([]);
@@ -924,6 +1022,7 @@ export default function TopologyViewer({
       if (mapObjectRef.current) disposeObject(mapObjectRef.current);
       if (pickedPointMarkerRef.current) disposeObject(pickedPointMarkerRef.current);
       if (pathOverlayRef.current) disposeObject(pathOverlayRef.current);
+      if (goalPosesOverlayRef.current) disposeObject(goalPosesOverlayRef.current);
       scene.clear();
       renderer.dispose();
       renderer.domElement.remove();
@@ -998,6 +1097,23 @@ export default function TopologyViewer({
   }, [pathData, pathColor]);
 
   useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    if (goalPosesOverlayRef.current) {
+      scene.remove(goalPosesOverlayRef.current);
+      disposeObject(goalPosesOverlayRef.current);
+      goalPosesOverlayRef.current = null;
+    }
+
+    if (goalPoses?.length) {
+      const overlay = makeGoalPosesOverlay(goalPoses);
+      goalPosesOverlayRef.current = overlay;
+      scene.add(overlay);
+    }
+  }, [goalPoses]);
+
+  useEffect(() => {
     const topologyGroup = topologyGroupRef.current;
     topologyGroup.children.forEach((child) => disposeObject(child));
     topologyGroup.clear();
@@ -1040,6 +1156,7 @@ export default function TopologyViewer({
         mapObject: mapObjectRef.current,
         topologyGroup: topologyGroupRef.current,
         pathObject: pathOverlayRef.current,
+        goalPosesObject: goalPosesOverlayRef.current,
       });
     });
   }, [fitNonce]);
@@ -1054,6 +1171,7 @@ export default function TopologyViewer({
         mapObject: mapObjectRef.current,
         topologyGroup: topologyGroupRef.current,
         pathObject: pathOverlayRef.current,
+        goalPosesObject: goalPosesOverlayRef.current,
       });
     });
   }, [viewFaceRequest]);

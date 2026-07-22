@@ -21,6 +21,7 @@ A single-page React + Three.js application for visualizing point-cloud maps and 
   - `topology_nodes`
   - `edges`
   - `path_points`
+- Load `goal_poses.json` files and display each valid pose with its ID and orientation in 3D.
 - Display the map and topology in a 3D Three.js scene.
 - Drag topology nodes and update their `x`, `y`, `z` values.
 - Add/delete topology nodes from the panel or place a new node directly in the 3D view.
@@ -50,6 +51,7 @@ A single-page React + Three.js application for visualizing point-cloud maps and 
 - Open a history panel and restore any recorded edit step.
 - Choose the page and 3D scene background color, default dark.
 - Manually adjust the rendered 3D point cloud size and color.
+- Filter vertical-wall points with native PCL normal estimation; the search radius and vertical-angle tolerance are configurable, and the original map can be restored.
 - Switch the camera to any cube-face viewpoint: top, bottom, front, back, left, or right.
 - Export updated topology JSON.
 
@@ -88,6 +90,28 @@ http://localhost:5173/
 
 ```bash
 npm run build
+```
+
+## PCL Vertical-wall Filter
+
+The filter uses native PCL. On Ubuntu, install the build dependencies and compile the helper once:
+
+```bash
+sudo apt install libpcl-dev cmake
+npm run build:pcl
+```
+
+Then start the app with `npm run dev` or `npm run preview`. The Vite server exposes the local PCL endpoint used by the browser. A static-only web host must provide an equivalent `/api/pcl/filter-vertical-walls` endpoint.
+
+- `Normal radius`: neighborhood radius used for normal estimation.
+- `Vertical tolerance`: maximum deviation from a vertical surface. A point is classified as wall-like when `abs(normal_z) <= sin(tolerance)`.
+- Points with invalid normals are retained.
+- `Restore map` restores the originally loaded point cloud.
+
+Run the synthetic ground-and-wall verification with:
+
+```bash
+npm run verify:pcl
 ```
 
 ## Preview Production Build

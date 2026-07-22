@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:pcl": "cmake -S native -B native/build && cmake --build native/build --parallel 2",
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
+    "verify:pcl": "node scripts/verify-pcl-filter.js",
     "verify:render": "node scripts/verify-render.js"
   },
   "dependencies": {

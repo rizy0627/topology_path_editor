@@ -368,6 +368,13 @@ function makeFilteredFileName(baseName) {
   return `${stripped}_clipped.pcd`;
 }
 
+export function createPcdFile(positions, baseName = 'point_cloud.pcd') {
+  const stripped = String(baseName).replace(/\.[^.]+$/, '') || 'point_cloud';
+  return new File([buildPcdAscii(positions)], `${stripped}.pcd`, {
+    type: 'application/octet-stream',
+  });
+}
+
 export function downloadFilteredPointCloud(mapData, range) {
   const filtered = filterPositionsByRange(mapData?.positions, range);
   const pointCount = Math.floor(filtered.length / 3);

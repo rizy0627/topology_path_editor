@@ -36,6 +36,7 @@ import {
   Save,
   Spline,
   Copy,
+  Crosshair,
   Target,
   Trash2,
   Undo2,
@@ -91,6 +92,7 @@ const MANUAL_ROTATION_MODE = 'manual';
 const GOAL_COMMAND_TOPIC = 'goalTopic';
 const GOAL_COMMAND_ACTION = 'navAction';
 const DEFAULT_NAV_ACTION_GOAL_ID = 'pcd-test-02';
+const CLICKED_POINT_ACTION = 'clickedPoint';
 const BACKGROUND_PRESETS = ['#0f172a', '#111827', '#1f2937', '#ffffff', '#f8fafc'];
 const VIEW_FACE_OPTIONS = [
   { value: 'top', label: 'Top', title: 'Top face (+Z)' },
@@ -257,6 +259,13 @@ function makeInitialPoseCommand(point, yawDegrees = DEFAULT_YAW_DEGREES) {
   const qz = formatCommandNumber(orientation.z);
   const qw = formatCommandNumber(orientation.w);
   return `ros2 topic pub /initialpose geometry_msgs/PoseWithCovarianceStamped "{header: {stamp: {sec: 0, nanosec: 0}, frame_id: 'map'}, pose: {pose: {position: {x: ${x}, y: ${y}, z: ${z}}, orientation: {z: ${qz}, w: ${qw}}}, covariance: [0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1,0,0,0,0,0,0,0.1]}}"`;
+}
+
+function makeClickedPointCommand(point) {
+  const x = formatCommandNumber(point.x);
+  const y = formatCommandNumber(point.y);
+  const z = formatCommandNumber(point.z);
+  return `ros2 topic pub --once /clicked_point geometry_msgs/msg/PointStamped "{header: {stamp: {sec: 0, nanosec: 0}, frame_id: 'map'}, point: {x: ${x}, y: ${y}, z: ${z}}}"`;
 }
 
 function createSequentialEdges(nodes = [], previousEdges = []) {
@@ -706,6 +715,7 @@ export default function App() {
       return makeGoalCommand(commandPoint, yawDegrees);
     }
     if (pointAction === 'initialPose') return makeInitialPoseCommand(commandPoint, yawDegrees);
+    if (pointAction === CLICKED_POINT_ACTION) return makeClickedPointCommand(commandPoint);
     return '';
   }, [commandPoint, goalCommandType, navActionFeedback, navActionGoalId, pointAction, yawDegrees]);
 
@@ -878,7 +888,7 @@ export default function App() {
     setGoalCommandType(options.goalCommandType || GOAL_COMMAND_TOPIC);
     setNavActionGoalId(DEFAULT_NAV_ACTION_GOAL_ID);
     setNavActionFeedback(true);
-    setZOffset(DEFAULT_Z_OFFSET);
+    setZOffset(action === CLICKED_POINT_ACTION ? 0 : DEFAULT_Z_OFFSET);
     setYawDegrees(DEFAULT_YAW_DEGREES);
     setPointContextMenu(null);
   };
@@ -2736,6 +2746,10 @@ export default function App() {
               <MousePointer2 size={15} />
               <span>Set as Initial Pose</span>
             </button>
+            <button type="button" onClick={() => openPointAction(CLICKED_POINT_ACTION)}>
+              <Crosshair size={15} />
+              <span>Publish Clicked Point</span>
+            </button>
             <button type="button" onClick={() => openPointAction('topoNode')}>
               <GitBranchPlus size={15} />
               <span>Add as Topo Node</span>
@@ -2780,7 +2794,9 @@ export default function App() {
             ? 'Add Topo Node'
             : pointAction === 'initialPose'
               ? 'Initial Pose Command'
-              : 'Navigation Goal Command'
+              : pointAction === CLICKED_POINT_ACTION
+                ? 'Clicked Point Command'
+                : 'Navigation Goal Command'
         }
         open={Boolean(pointAction)}
         onCancel={closePointAction}
@@ -2832,7 +2848,7 @@ export default function App() {
               />
             </>
           ) : null}
-          {generatedCommand ? (
+          {pointAction !== CLICKED_POINT_ACTION && generatedCommand ? (
             <>
               <label className="field-label">Yaw angle</label>
               <InputNumber

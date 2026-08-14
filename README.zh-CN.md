@@ -21,6 +21,7 @@
   - `topology_nodes`
   - `edges`
   - `path_points`
+- 加载 `goal_poses.json`，并在 3D 场景中显示每个有效目标点的 ID 和姿态方向。
 - 在 Three.js 3D 场景中显示地图和拓扑结构。
 - 拖拽拓扑节点并实时更新 `x`、`y`、`z` 坐标。
 - 可从面板添加或删除拓扑节点，也可进入放置模式后在 3D 视图中点击新增节点。
@@ -50,6 +51,7 @@
 - 打开历史记录窗口，并回退到任意历史步骤。
 - 手动选择页面和 3D 场景背景颜色，默认深色。
 - 手动调整 3D 点云的点大小和显示颜色。
+- 使用原生 PCL 法向估计过滤垂直墙面点，可调整搜索半径和垂直角容差，并恢复原始地图。
 - 可将相机切换到正方体 6 个面对应的视角：上、下、前、后、左、右。
 - 导出更新后的拓扑 JSON。
 
@@ -88,6 +90,28 @@ http://localhost:5173/
 
 ```bash
 npm run build
+```
+
+## PCL 垂直墙面过滤
+
+该功能使用原生 PCL。在 Ubuntu 中先安装编译依赖，并编译一次本地处理程序：
+
+```bash
+sudo apt install libpcl-dev cmake
+npm run build:pcl
+```
+
+然后通过 `npm run dev` 或 `npm run preview` 启动应用。Vite 服务会提供浏览器调用的本地 PCL 接口；如果仅部署静态文件，需要另行提供兼容的 `/api/pcl/filter-vertical-walls` 接口。
+
+- `Normal radius`：估计法向量时使用的邻域搜索半径。
+- `Vertical tolerance`：墙面偏离垂直方向的最大容差；满足 `abs(normal_z) <= sin(tolerance)` 的点会被判定为墙面候选点。
+- 无法计算有效法向量的稀疏点会保留。
+- `Restore map` 可以恢复最初加载的点云。
+
+可使用合成地面与墙面点云执行验证：
+
+```bash
+npm run verify:pcl
 ```
 
 ## 预览生产构建

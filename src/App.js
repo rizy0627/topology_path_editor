@@ -45,7 +45,9 @@ import {
   Waypoints,
 } from 'lucide-react';
 import TopologyViewer from './components/TopologyViewer';
-import { downloadFilteredPointCloud, parseMapFile, parsePathFile } from './helpers/fileLoaders';
+import { createPcdFile, downloadFilteredPointCloud, parseMapFile, parsePathFile } from './helpers/fileLoaders';
+import { loadGoalPosesJson } from './helpers/goalPoses';
+import { filterVerticalWalls } from './helpers/pclFilter';
 import { getTypeColor } from './helpers/colors';
 import {
   DEFAULT_SPACING,
@@ -83,6 +85,8 @@ const DEFAULT_BACKGROUND_COLOR = '#0f172a';
 const DEFAULT_POINT_CLOUD_COLOR = '#38bdf8';
 const DEFAULT_POINT_CLOUD_SIZE = 0.035;
 const DEFAULT_PATH_COLOR = '#f43f5e';
+const DEFAULT_PCL_NORMAL_RADIUS = 0.3;
+const DEFAULT_PCL_VERTICAL_TOLERANCE = 20;
 const ROTATION_MODE_FIELD = 'rotation_mode';
 const MANUAL_ROTATION_MODE = 'manual';
 const GOAL_COMMAND_TOPIC = 'goalTopic';
@@ -605,11 +609,17 @@ export default function App() {
   const [pointCloudSize, setPointCloudSize] = useState(DEFAULT_POINT_CLOUD_SIZE);
   const [pointCloudColor, setPointCloudColor] = useState(DEFAULT_POINT_CLOUD_COLOR);
   const [pointCloudColorInput, setPointCloudColorInput] = useState(DEFAULT_POINT_CLOUD_COLOR);
+  const [pclNormalRadius, setPclNormalRadius] = useState(DEFAULT_PCL_NORMAL_RADIUS);
+  const [pclVerticalTolerance, setPclVerticalTolerance] = useState(DEFAULT_PCL_VERTICAL_TOLERANCE);
+  const [pclFiltering, setPclFiltering] = useState(false);
+  const [pclFilterStats, setPclFilterStats] = useState(null);
   const [pathData, setPathData] = useState(null);
   const [pathStatus, setPathStatus] = useState('');
   const [pathVisible, setPathVisible] = useState(true);
   const [pathColor, setPathColor] = useState(DEFAULT_PATH_COLOR);
   const [pathColorInput, setPathColorInput] = useState(DEFAULT_PATH_COLOR);
+  const [goalPosesData, setGoalPosesData] = useState(null);
+  const [goalPosesVisible, setGoalPosesVisible] = useState(true);
   const [clippingRange, setClippingRange] = useState(null);
   const [pickedPoint, setPickedPoint] = useState(null);
   const [pointContextMenu, setPointContextMenu] = useState(null);
@@ -641,6 +651,7 @@ export default function App() {
   const mapInputRef = useRef(null);
   const jsonInputRef = useRef(null);
   const pathInputRef = useRef(null);
+  const goalPosesInputRef = useRef(null);
   const topologyRef = useRef(topology);
   const spacingRef = useRef(spacing);
   const nodeTypesRef = useRef(nodeTypes);
@@ -648,6 +659,7 @@ export default function App() {
   const dragStartRef = useRef(null);
   const tempPointDragStartRef = useRef(null);
   const originalMapFileRef = useRef(null);
+  const activeMapFileRef = useRef(null);
 
   useEffect(() => {
     topologyRef.current = topology;
@@ -789,11 +801,69 @@ export default function App() {
       message.loading({ content: 'Filtering map points…', key });
       // Re-parse the original file without the sampling cap so the export keeps
       // full-resolution points, then filter by the current clipping range.
-      const source = originalMapFileRef.current
-        ? await parseMapFile(originalMapFileRef.current, { maxPoints: Infinity })
+      const source = activeMapFileRef.current
+        ? await parseMapFile(activeMapFileRef.current, { maxPoints: Infinity })
         : mapData;
       const saved = downloadFilteredPointCloud(source, clippingRange);
       message.success({ content: `Saved ${saved.toLocaleString()} filtered points`, key });
+    } catch (error) {
+      message.error({ content: error.message, key });
+    }
+  };
+
+  const applyPclWallFilter = async () => {
+    const originalFile = originalMapFileRef.current;
+    if (!originalFile || pclFiltering) return;
+
+    const key = 'pcl-wall-filter';
+    setPclFiltering(true);
+    try {
+      message.loading({ content: 'Estimating normals and filtering vertical walls…', key, duration: 0 });
+      const extension = originalFile.name.split('.').pop()?.toLowerCase();
+      let pclInputFile = originalFile;
+      if (!['pcd', 'ply'].includes(extension)) {
+        const fullResolutionMap = await parseMapFile(originalFile, { maxPoints: Infinity });
+        pclInputFile = createPcdFile(fullResolutionMap.positions, originalFile.name);
+      }
+
+      const result = await filterVerticalWalls(pclInputFile, {
+        radius: pclNormalRadius,
+        angle: pclVerticalTolerance,
+      });
+      const parsed = await parseMapFile(result.file);
+      activeMapFileRef.current = result.file;
+      setMapData(parsed);
+      setPclFilterStats(result.statistics);
+      setMapStatus(`${parsed.name} - PCL filtered - ${parsed.sampledCount.toLocaleString()} / ${parsed.originalCount.toLocaleString()} points`);
+      setFitNonce((value) => value + 1);
+      const removed = result.statistics?.removedPoints;
+      message.success({
+        content: Number.isFinite(removed)
+          ? `Removed ${removed.toLocaleString()} vertical-wall points`
+          : 'Vertical-wall filtering completed',
+        key,
+      });
+    } catch (error) {
+      message.error({ content: error.message, key });
+    } finally {
+      setPclFiltering(false);
+    }
+  };
+
+  const restoreOriginalMap = async () => {
+    const originalFile = originalMapFileRef.current;
+    if (!originalFile || pclFiltering) return;
+
+    const key = 'restore-map';
+    try {
+      message.loading({ content: 'Restoring original map…', key });
+      const parsed = await parseMapFile(originalFile);
+      activeMapFileRef.current = originalFile;
+      setMapData(parsed);
+      setPclFilterStats(null);
+      setMapStatus(`${parsed.name} - ${parsed.format} - ${parsed.sampledCount.toLocaleString()} / ${parsed.originalCount.toLocaleString()} points`);
+      setFitNonce((value) => value + 1);
+      message.success({ content: 'Original map restored', key });
     } catch (error) {
       message.error({ content: error.message, key });
     }
@@ -963,7 +1033,9 @@ export default function App() {
       message.loading({ content: `Loading ${file.name}`, key: 'map' });
       const parsed = await parseMapFile(file);
       originalMapFileRef.current = file;
+      activeMapFileRef.current = file;
       setMapData(parsed);
+      setPclFilterStats(null);
       setMapStatus(`${parsed.name} - ${parsed.format} - ${parsed.sampledCount.toLocaleString()} / ${parsed.originalCount.toLocaleString()} points`);
       setFitNonce((value) => value + 1);
       message.success({ content: 'Map loaded', key: 'map' });
@@ -986,6 +1058,26 @@ export default function App() {
       message.success({ content: 'Path loaded', key: 'path' });
     } catch (error) {
       message.error({ content: error.message, key: 'path' });
+    }
+  };
+
+  const handleGoalPosesFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      message.loading({ content: `Loading ${file.name}`, key: 'goal-poses' });
+      const parsed = await loadGoalPosesJson(file);
+      setGoalPosesData(parsed);
+      setGoalPosesVisible(true);
+      setFitNonce((value) => value + 1);
+      message.success({
+        content: `Loaded ${parsed.poses.length.toLocaleString()} goal poses`,
+        key: 'goal-poses',
+      });
+    } catch (error) {
+      message.error({ content: error.message, key: 'goal-poses' });
     }
   };
 
@@ -1945,7 +2037,7 @@ export default function App() {
             <MapIcon size={16} />
             <span>Files</span>
           </div>
-          <Space.Compact block>
+          <div className="file-button-grid">
             <Button block icon={<UploadCloud size={16} />} onClick={() => mapInputRef.current?.click()}>
               Load Map
             </Button>
@@ -1955,13 +2047,22 @@ export default function App() {
             <Button block icon={<Waypoints size={16} />} onClick={() => pathInputRef.current?.click()}>
               Load Path
             </Button>
-          </Space.Compact>
+            <Button block icon={<Target size={16} />} onClick={() => goalPosesInputRef.current?.click()}>
+              Load Goals
+            </Button>
+          </div>
           <input data-testid="map-input" ref={mapInputRef} hidden type="file" accept=".pcd,.ply,.xyz,.txt,.csv" onChange={handleMapFile} />
           <input data-testid="topology-input" ref={jsonInputRef} hidden type="file" accept=".json,application/json" onChange={handleTopologyFile} />
           <input data-testid="path-input" ref={pathInputRef} hidden type="file" accept=".csv,.xyz,.txt" onChange={handlePathFile} />
+          <input data-testid="goal-poses-input" ref={goalPosesInputRef} hidden type="file" accept=".json,application/json" onChange={handleGoalPosesFile} />
           {mapStatus ? <div className="status-line">{mapStatus}</div> : null}
           {jsonFileName ? <div className="status-line">{jsonFileName}</div> : null}
           {pathStatus ? <div className="status-line">{pathStatus}</div> : null}
+          {goalPosesData ? (
+            <div className="status-line">
+              {goalPosesData.name} - {goalPosesData.poses.length.toLocaleString()} goal poses
+            </div>
+          ) : null}
           <Button type="primary" block icon={<Download size={16} />} onClick={exportJson}>
             Export JSON
           </Button>
@@ -2029,6 +2130,48 @@ export default function App() {
               </div>
             </label>
           </div>
+          <div className="pcl-filter-controls">
+            <div className="path-overlay-head">
+              <span className="field-label">PCL vertical-wall filter</span>
+            </div>
+            <div className="pcl-filter-grid">
+              <label>
+                <span>Normal radius (m)</span>
+                <InputNumber
+                  min={0.01}
+                  max={10}
+                  step={0.05}
+                  precision={2}
+                  value={pclNormalRadius}
+                  onChange={(value) => setPclNormalRadius(Math.max(0.01, Number(value) || DEFAULT_PCL_NORMAL_RADIUS))}
+                />
+              </label>
+              <label>
+                <span>Vertical tolerance (°)</span>
+                <InputNumber
+                  min={0.1}
+                  max={89}
+                  step={1}
+                  precision={1}
+                  value={pclVerticalTolerance}
+                  onChange={(value) => setPclVerticalTolerance(Math.max(0.1, Number(value) || DEFAULT_PCL_VERTICAL_TOLERANCE))}
+                />
+              </label>
+            </div>
+            <Space.Compact block>
+              <Button block loading={pclFiltering} disabled={!mapData} onClick={applyPclWallFilter}>
+                Filter walls
+              </Button>
+              <Button block disabled={!mapData || pclFiltering || !pclFilterStats} onClick={restoreOriginalMap}>
+                Restore map
+              </Button>
+            </Space.Compact>
+            {pclFilterStats ? (
+              <div className="pcl-filter-stats">
+                Removed {pclFilterStats.removedPoints.toLocaleString()} / {pclFilterStats.inputPoints.toLocaleString()} points
+              </div>
+            ) : null}
+          </div>
           <div className="path-overlay-controls">
             <div className="path-overlay-head">
               <span className="field-label">Path overlay</span>
@@ -2052,6 +2195,19 @@ export default function App() {
                 onBlur={() => setPathColorInput(pathColor)}
                 className="background-input"
                 disabled={!pathData}
+              />
+            </div>
+          </div>
+          <div className="path-overlay-controls">
+            <div className="path-overlay-head">
+              <span className="field-label">
+                Goal poses{goalPosesData ? ` (${goalPosesData.poses.length})` : ''}
+              </span>
+              <Switch
+                size="small"
+                checked={goalPosesVisible}
+                onChange={setGoalPosesVisible}
+                disabled={!goalPosesData}
               />
             </div>
           </div>
@@ -2611,6 +2767,7 @@ export default function App() {
           pickedPoint={pickedPoint}
           pathData={pathVisible ? pathData : null}
           pathColor={pathColor}
+          goalPoses={goalPosesVisible ? goalPosesData?.poses : null}
           selectedNodeId={selectedNodeId}
           selectedEdgeKey={selectedEdgeKey}
           selectedTempPointKey={selectedTempPointKey}

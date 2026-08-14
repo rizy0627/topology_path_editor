@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.16)
+project(pcl_vertical_wall_filter LANGUAGES CXX)
+
+find_package(PCL 1.10 REQUIRED COMPONENTS common features filters io search)
+find_package(OpenMP)
+
+add_executable(pcl_vertical_wall_filter vertical_wall_filter.cpp)
+target_compile_features(pcl_vertical_wall_filter PRIVATE cxx_std_17)
+target_include_directories(pcl_vertical_wall_filter PRIVATE ${PCL_INCLUDE_DIRS})
+target_link_directories(pcl_vertical_wall_filter PRIVATE ${PCL_LIBRARY_DIRS})
+target_compile_definitions(pcl_vertical_wall_filter PRIVATE ${PCL_DEFINITIONS})
+target_link_libraries(pcl_vertical_wall_filter PRIVATE ${PCL_LIBRARIES})
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(pcl_vertical_wall_filter PRIVATE OpenMP::OpenMP_CXX)
+endif()
